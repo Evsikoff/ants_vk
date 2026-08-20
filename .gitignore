@@ -1,0 +1,18 @@
+# 🚨 THE PAYMENT STORE. Written at runtime by server/vk-payments.js and it holds
+# vk_user_id values alongside what each of them bought — personal data plus a
+# purchase ledger. It must never reach a public repository, and it must never be
+# what a deploy overwrites.
+server/orders.json
+server/orders.json.tmp
+server/*.tmp
+
+# Local env for the server's three secrets (app id, защищённый ключ, сервисный ключ).
+.env
+.env.*
+
+node_modules/
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
