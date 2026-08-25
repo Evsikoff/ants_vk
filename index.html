@@ -1614,6 +1614,91 @@
 }
 
 </style>   <!-- this game's colours only -->
+<style>/* inlined from audio.css */
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ЗВУК — the player's own volume/mute controls.
+
+   Deliberately NOT in shell.css: that file is the shared menu system and is marked
+   never-edit, so everything this feature needs to draw lives here instead. Only new
+   selectors are used — nothing above is overridden except the two `right:` values the
+   HUD keys are laid out from, and those are set from JS (see layHudKeys), not here.
+
+   The controls appear in three places and are the SAME markup every time, built by
+   audioBoxHTML():
+     • ЗВУК on the home rail  → opens the #shSettings panel
+     • the ВЫЙТИ? panel       → the run is already paused there, so it doubles as pause
+     • a mute key in the HUD  → one tap, no panel, for "silence it NOW"
+   Card units only — this is all inside the 450x800 design card (UI-SCALING-STANDARD).
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* The speaker glyph is an inline SVG for the same reason the fullscreen icon is one:
+   there is no speaker in icons/, a drawn glyph renders identically on every client,
+   and this shell bans emoji. It inherits `color`, so one path set serves a dark HUD
+   key, a light green button and the white rail button without three copies. */
+.sndico{ display:block; overflow:visible; }
+.sndico .body { fill:currentColor; stroke:none; }
+.sndico .wave,
+.sndico .cross{ fill:none; stroke:currentColor; stroke-width:2.2;
+                stroke-linecap:round; stroke-linejoin:round; }
+/* The quieter arc dims rather than disappearing — the icon keeps the same silhouette
+   at every level, so it reads as one control changing and not as three icons. */
+.sndico .wave.dim{ opacity:.25; }
+
+/* ── HOME RAIL BUTTON ──────────────────────────────────────────────────────── */
+#shSndRail{ color:#fff; }
+/* Two shadows, not one: the tight dark halo is what keeps a white glyph readable on a
+   PALE 3D board (this game's is near-white), and the soft offset one gives it the same
+   lift as the PNG icons on the other rail buttons. */
+#shSndRail .sndico{ width:40px; height:40px;
+  filter:drop-shadow(0 0 1.5px var(--ink)) drop-shadow(0 0 3px rgba(13,16,22,.85))
+         drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
+#shSndRail .sndico .wave, #shSndRail .sndico .cross{ stroke-width:2.6; }
+
+/* ── IN-RUN MUTE KEY ───────────────────────────────────────────────────────────
+   Same 44px key as the HOME button top-left, so the two run controls are visibly the
+   same kind of thing. Its `right` is set by layHudKeys(), never here. */
+#gameShell .ghud .snd{ position:absolute; top:15px; width:44px; height:44px; padding:0;
+  border-radius:14px; border:var(--ink-w) solid var(--ink); background:var(--panel);
+  color:var(--text); cursor:pointer; pointer-events:auto; display:grid; place-items:center;
+  box-shadow:0 3px 0 #0002; transition:transform .1s, box-shadow .1s, color .16s, background .16s; }
+#gameShell .ghud .snd:active{ transform:translateY(2px); box-shadow:0 1px 0 #0002; }
+#gameShell .ghud .snd .sndico{ width:26px; height:26px; }
+/* Silent is a STATE the player can see without tapping — a mute button that looks
+   identical muted and unmuted is a button you press twice to find out. */
+#gameShell .ghud .snd.off{ background:var(--gh-3); color:#7d8698; }
+#gameShell.subbar .ghud .snd{ top:22px; }
+
+/* ── THE CONTROL GROUP (settings panel + ВЫЙТИ? panel) ─────────────────────── */
+.sndbox{ width:100%; display:flex; flex-direction:column; gap:11px; }
+.sh-ov .btn.sndtgl{ --c1:var(--gh-1); --c2:var(--gh-2); --base:var(--gh-3); color:var(--text);
+  text-shadow:none; display:flex; align-items:center; justify-content:center; gap:9px; }
+/* ON takes the ACTION ramp, the same green-yellow as PLAY: in this shell that ramp
+   means "this is live", which is exactly what the toggle is saying. */
+.sh-ov .btn.sndtgl.on{ --c1:var(--pri-1); --c2:var(--pri-2); --base:var(--pri-3); color:var(--pri-ink); }
+.sh-ov .btn.sndtgl .sndico{ width:24px; height:24px; flex:none; }
+
+.sndrow{ display:flex; align-items:center; gap:11px; width:100%; }
+.sndrow .sndico{ width:22px; height:22px; flex:none; color:var(--text); opacity:.75; }
+/* touch-action:none or the drag turns into a page scroll gesture on mobile and the
+   slider stops following the thumb halfway down. */
+.sndslide{ position:relative; flex:1; min-width:0; height:28px; display:flex; align-items:center;
+  cursor:pointer; touch-action:none; }
+.sndslide .track{ position:relative; width:100%; height:14px; border-radius:999px;
+  background:var(--panel-2); border:var(--ink-w2) solid var(--ink); overflow:hidden; }
+.sndslide .fill{ position:absolute; left:0; top:0; bottom:0; width:0;
+  background:linear-gradient(var(--pri-1),var(--pri-2)); }
+/* The knob is a sibling of the track, not a child: the track clips its fill, and a
+   knob inside it would be clipped at both ends exactly where it matters. */
+.sndslide .knob{ position:absolute; top:50%; left:0; width:24px; height:24px; margin-left:-12px;
+  transform:translateY(-50%); border-radius:50%; border:var(--ink-w2) solid var(--ink);
+  background:linear-gradient(180deg,#ffffff 0 45%,#dde5ee 55% 100%);
+  box-shadow:0 2px 0 rgba(0,0,0,.35); pointer-events:none; }
+.sndpct{ width:48px; flex:none; text-align:right; font-size:15px; font-weight:800; color:var(--text); }
+/* Sound off: the slider is still readable but visibly not in charge. It stays LIVE —
+   dragging it is how you turn the sound back on, which is what a player expects from
+   a volume slider they can see. */
+.sndbox.off .sndrow{ opacity:.45; }
+</style>   <!-- volume + mute, drawn by shell.js -->
 <style>
   /* SCENE ONLY. Every button, panel, chip and overlay belongs to the shell — the
      prototype's own UI css is deliberately not carried over. Anything visual that
@@ -2185,7 +2270,13 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
   };
 
   const S = {
-    coins:200, gems:0, lives:5, level:1, sound:true,
+    coins:200, gems:0, lives:5, level:1,
+    /* SOUND. Two fields, not one: `sound` is the player's on/off switch and `vol`
+       is where the slider was left, 0-100. Keeping them apart is what makes the
+       toggle reversible — collapsing "off" into vol:0 loses the level to come
+       back to, so turning sound on again would restore silence. Both ride in the
+       normal save, so the setting survives a reload like everything else. */
+    sound:true, vol:100,
     lastLifeLostAt:0, consecutiveFails:0, levelsSinceInterstitial:0,
     owned:{}, picked:0, paint:0, up:{},
     // league
@@ -2317,7 +2408,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      This used to be two (the shell made its own, the game made its own). Two is a real
      bug, not just waste: iOS is hostile to multiple AudioContexts, and the second one
      can come up silent or starve the first. The game gets this one via Shell.audio(). */
-  let _actx = null;
+  let _actx = null, _master = null;
   function audioCtx(){
     if (_actx) return _actx;
     try {
@@ -2325,8 +2416,21 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
       if (!AC) return null;
       _actx = new AC();
     } catch(_){ return null; }
+    /* ONE master gain in front of the destination, and EVERYTHING goes through it —
+       the shell's blips and the game's SFX alike. That is what makes a volume slider
+       possible at all: without it there is no single number to turn, only a dozen
+       per-sound `gain` values scattered across two files, and the game's would be
+       out of the shell's reach entirely. */
+    try {
+      _master = _actx.createGain();
+      _master.gain.value = outLevel();
+      _master.connect(_actx.destination);
+    } catch(_){ _master = null; }
     return _actx;
   }
+  /** Where a sound must connect: the master gain, or the raw destination if the
+   *  browser refused us a GainNode. Never null once there is a context. */
+  function audioOut(){ const c = audioCtx(); return c ? (_master || c.destination) : null; }
   /* Resume if the browser parked it. A context created outside a gesture starts
      'suspended' and STAYS that way — sounds get scheduled into silence with no error,
      which is exactly what "the audio just doesn't work" looks like. Cheap to call. */
@@ -2344,7 +2448,9 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
     document.addEventListener(ev, audioWake, {capture:true, passive:true}));
   /** kind: 'tap' | 'confirm' | 'back' | 'buy' */
   function uiSound(kind){
-    if (audioMuted()) return;
+    /* Silent is silent: don't schedule into a zeroed master. A muted page that still
+       builds oscillators every tap is work nobody can hear. */
+    if (audioMuted() || volume() <= 0) return;
     const ctx = audioWake(); if (!ctx) return;
     const t = ctx.currentTime;
     const spec = kind === 'confirm' ? { f0:520, f1:780, dur:0.11, gain:0.05, type:'triangle' }
@@ -2360,7 +2466,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
       g.gain.setValueAtTime(0.0001, t);
       g.gain.exponentialRampToValueAtTime(spec.gain, t + 0.008);
       g.gain.exponentialRampToValueAtTime(0.0001, t + spec.dur);
-      osc.connect(g); g.connect(ctx.destination);
+      osc.connect(g); g.connect(audioOut() || ctx.destination);
       osc.start(t); osc.stop(t + spec.dur + 0.02);
     } catch(_){}
   }
@@ -2371,15 +2477,179 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      can change audio (initial isAudioEnabled, onAudioEnabledChange, pause, resume)
      routes through here.
      The game is told via Game.setMuted(bool) — implement it and honour it, because
-     "host mute silences the game" is a cert requirement, not a nicety. */
+     "host mute silences the game" is a cert requirement, not a nicety.
+
+     ON TOP OF THAT, the player has their own controls: an on/off switch and a volume
+     slider. They are NOT a second mute flag competing with the host's — the host's
+     mute still wins outright, and the slider only scales what is left. Everything
+     audible on the page hangs off ONE master gain (see audioCtx), so:
+        effective output = host muted OR sound:false  ?  0  :  vol/100
+     and there is exactly one number to turn. Both fields live in the save. */
   let _hostMuted = false;
   function audioMuted(){ return _hostMuted || S.sound === false; }
-  function applyMute(hostMuted){
+  /** The player's level as a 0..1 multiplier. Tolerant of a junk save: an old blob with
+   *  no `vol`, or a nonsense one, reads as full volume rather than as silence — a
+   *  setting that fails to silence is a nuisance, one that fails LOUD-to-silent is a
+   *  bug report saying "the sound stopped working". */
+  function volume(){
+    const v = (typeof S.vol === 'number' && isFinite(S.vol)) ? S.vol : 100;
+    return Math.max(0, Math.min(1, v / 100));
+  }
+  /** Effective output level, 0..1 — the slider unless something has muted us. */
+  function outLevel(){ return audioMuted() ? 0 : volume(); }
+  /* Push the current state at everything that can make noise. Called on every path
+     that can change it: the host, the player's toggle, the slider, boot, restore. */
+  function applyAudio(hostMuted){
     if (hostMuted !== undefined) _hostMuted = !!hostMuted;
     const m = audioMuted();
+    /* RAMPED, not assigned. Setting .value on a live gain steps it, and a step on a
+       sounding oscillator is an audible click — which is exactly what dragging a
+       volume slider does, forty times a second. 50ms is inaudible as a slide and
+       still instant as a mute. */
+    if (_master && _actx){
+      const g = outLevel();
+      try {
+        const t = _actx.currentTime;
+        _master.gain.cancelScheduledValues(t);
+        _master.gain.setValueAtTime(_master.gain.value, t);
+        _master.gain.linearRampToValueAtTime(g, t + 0.05);
+      } catch(_){ try { _master.gain.value = g; } catch(__){} }
+    }
+    /* The master gain alone would be enough to silence the page, but the game is still
+       told: a game that knows it is muted can skip building sounds nobody will hear,
+       and "host mute silences the game" is a cert requirement stated in terms of this
+       call, not in terms of our gain graph. */
     try { global.Game && global.Game.setMuted && global.Game.setMuted(m); } catch(e){
       SDK.logError('Game.setMuted threw: ' + String(e));
     }
+    /* Repaint from HERE and nowhere else, so the controls can never drift from the
+       state. A host mute changes nothing the player touched, but it does change what
+       they can hear — and a lit speaker over a silent game is the icon lying to them. */
+    renderAudioUI();
+  }
+  /* The old name, kept because it is the one the SDK callbacks and the public API use
+     and because "re-apply the mute state" is still exactly what callers mean by it. */
+  function applyMute(hostMuted){ applyAudio(hostMuted); }
+
+  /* ── THE PLAYER'S CONTROLS ───────────────────────────────────────────────────
+     One <svg> and one markup builder, used by all three entry points, so the icon in
+     the HUD and the icon on the panel can never disagree about what the state is. */
+  function sndIconHTML(){
+    const silent = outLevel() <= 0;
+    const v = volume();
+    /* Two arcs, dimmed by level — the silhouette never changes size, so the icon reads
+       as one control moving rather than as three different icons. */
+    const d1 = (!silent && v > 0.02) ? '' : ' dim';
+    const d2 = (!silent && v >= 0.55) ? '' : ' dim';
+    return '<svg class="sndico" viewBox="0 0 24 24" aria-hidden="true">'+
+      '<path class="body" d="M3.5 9H7.1L11.6 5.1V18.9L7.1 15H3.5Z"/>'+
+      (silent
+        ? '<path class="cross" d="M15.2 9.4L20.4 14.6M20.4 9.4L15.2 14.6"/>'
+        : '<path class="wave'+d1+'" d="M14.6 9.6a3.4 3.4 0 0 1 0 4.8"/>'+
+          '<path class="wave'+d2+'" d="M17.4 7.1a7 7 0 0 1 0 9.8"/>')+
+    '</svg>';
+  }
+  /* The whole control group as one string. Rendered into more than one panel, so it is
+     addressed by data-attributes and CLASSES, never ids — two copies of the same id is
+     the `shMoreBtn` bug the mount() comment further down is still apologising for. */
+  function audioBoxHTML(){
+    return '<div class="sndbox">'+
+      '<button class="btn sub sndtgl" data-snd-toggle>'+
+        '<span data-snd-ico></span><span data-snd-lbl>ЗВУК</span></button>'+
+      '<div class="sndrow">'+
+        '<span data-snd-ico></span>'+
+        '<div class="sndslide" data-snd-slider>'+
+          '<div class="track"><i class="fill"></i></div><b class="knob"></b>'+
+        '</div>'+
+        '<div class="sndpct" data-snd-pct>100%</div>'+
+      '</div>'+
+    '</div>';
+  }
+  /** Repaint every copy of the controls, wherever it lives. Cheap — call it after any
+   *  change rather than trying to remember which panel is open. */
+  let _icoWas = null;
+  function renderAudioUI(){
+    const on = S.sound !== false, pct = Math.round(volume() * 100), ico = sndIconHTML();
+    /* A drag calls this on every pointermove. The icon only has four states, so rebuild
+       it when the MARKUP actually changed rather than reparsing four <svg>s at 60Hz. */
+    if (ico !== _icoWas){
+      _icoWas = ico;
+      document.querySelectorAll('[data-snd-ico]').forEach(n=>{ n.innerHTML = ico; });
+    }
+    document.querySelectorAll('[data-snd-lbl]').forEach(n=>{
+      n.textContent = on ? 'ЗВУК ВКЛЮЧЁН' : 'ЗВУК ВЫКЛЮЧЕН'; });
+    document.querySelectorAll('[data-snd-toggle]').forEach(n=> n.classList.toggle('on', on));
+    document.querySelectorAll('[data-snd-pct]').forEach(n=>{ n.textContent = pct + '%'; });
+    document.querySelectorAll('.sndbox').forEach(n=> n.classList.toggle('off', !on));
+    document.querySelectorAll('[data-snd-slider]').forEach(n=>{
+      const f = n.querySelector('.fill'), k = n.querySelector('.knob');
+      if (f) f.style.width = pct + '%';
+      if (k) k.style.left  = pct + '%';
+    });
+    /* The HUD key shows what is TRUE, not what the player last chose: a host mute must
+       show as muted there too, or the player taps a lit speaker and hears nothing. */
+    const hud = $('shSndHud'); if (hud) hud.classList.toggle('off', outLevel() <= 0);
+  }
+  /** Set the level, 0..1. `persist` writes the save — pass false during a drag. */
+  function setVolume(v, persist){
+    v = Math.max(0, Math.min(1, Number(v) || 0));
+    S.vol = Math.round(v * 100);
+    /* Dragging the slider up is the player asking for sound. Leaving `sound:false` in
+       place would give them a slider that moves and a game that stays silent, which
+       reads as broken rather than as "you are still muted". */
+    if (S.vol > 0 && S.sound === false) S.sound = true;
+    applyAudio();                              // ramps the gain AND repaints
+    if (persist) save();
+  }
+  function toggleSound(){
+    const on = S.sound === false;               // the state we are moving TO
+    S.sound = on;
+    /* Turning sound back ON with the slider at zero would be a button that does
+       nothing. Restore a level so the toggle always has an audible result. */
+    if (on && volume() <= 0) S.vol = 70;
+    applyAudio(); save();
+    if (on) uiSound('confirm');                 // let them HEAR that it worked
+  }
+  function openSettings(){ closeAll(); show('shSettings'); }
+
+  /* CONTROL WIRING. Delegated, so every copy of the controls works with no per-panel
+     wiring. getBoundingClientRect() and clientX are both in REAL screen pixels, so the
+     ratio is correct whatever scale the design card is currently drawn at — do not try
+     to "correct" for the transform here. */
+  let _sndDrag = null;
+  function sndDragTo(slide, clientX, persist){
+    const track = slide.querySelector('.track') || slide;
+    const r = track.getBoundingClientRect();
+    if (!r.width) return;
+    setVolume((clientX - r.left) / r.width, persist);
+  }
+  function bindAudioControls(){
+    /* The ON/OFF button is delegated too, and for the same reason the slider is: the
+       controls exist in two panels today and the wiring must not care how many. */
+    document.addEventListener('click', e=>{
+      const t = e.target && e.target.closest && e.target.closest('[data-snd-toggle]');
+      if (t) toggleSound();
+    });
+    document.addEventListener('pointerdown', e=>{
+      const s = e.target && e.target.closest && e.target.closest('[data-snd-slider]');
+      if (!s) return;
+      _sndDrag = s;
+      try { s.setPointerCapture(e.pointerId); } catch(_){}
+      audioWake();                       // this IS the gesture that unlocks audio
+      sndDragTo(s, e.clientX, false);
+      e.preventDefault();                // no text-selection drag, no scroll
+    });
+    document.addEventListener('pointermove', e=>{
+      if (_sndDrag) sndDragTo(_sndDrag, e.clientX, false);
+    });
+    const end = (e)=>{
+      if (!_sndDrag) return;
+      const s = _sndDrag; _sndDrag = null;
+      sndDragTo(s, e.clientX, true);     // the ONE save for the whole drag
+      uiSound('tap');                    // hear the level you just chose
+    };
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
   }
 
   const $ = id => document.getElementById(id);
@@ -4013,10 +4283,22 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
            asking on load is refused silently, every time. Mobile does not get one:
            there the VK client hands the mini app the screen itself, via
            VKWebAppSetViewSettings at boot. */
-        (VK.fullscreenSupported && VK.fullscreenSupported() ?
-          '<div class="rail r"><button class="round big" id="shVkFs">'+
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>'+
-            '<span class="cap">ЭКРАН</span></button></div>' : '')+
+        /* The right rail is now built unconditionally, because the SOUND button always
+           belongs on it — fullscreen is the optional passenger, not the rail. */
+        '<div class="rail r">'+
+          (VK.fullscreenSupported && VK.fullscreenSupported() ?
+            '<button class="round big" id="shVkFs">'+
+              '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>'+
+              '<span class="cap">ЭКРАН</span></button>' : '')+
+          /* Sound lives on the MENU, where a player goes looking for settings, and on
+             the HUD, where they need it mid-run. One button in one place would always
+             be the wrong place for half the times they want it.
+             The glyph gets its OWN span: renderAudioUI() replaces that node's innerHTML
+             on every change, and drawing straight into the button would take the
+             caption with it the first time the level moved. */
+          '<button class="round big" id="shSndRail"><span data-snd-ico></span>'+
+            '<span class="cap">ЗВУК</span></button>'+
+        '</div>'+
         '<div class="gTitle" id="shGTitle">ИГРА</div>'+
     /* THE GOAL, stated on the menu. Without this the player is looking at a vehicle and a
        button and has to infer what the game wants from them — which is how a game ends up
@@ -4061,6 +4343,10 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
         '<button class="quit" id="shQuit"><img src="'+ic('home')+'"></button>'+
         ((CFG.speeds && CFG.speeds.length > 1)
           ? '<button class="spd" id="shSpeed">x1</button>' : '')+
+        /* ONE TAP TO SILENCE, mid-run. The full controls are a panel away (HOME →
+           ВЫЙТИ?), but "someone walked in / the baby woke up" is not a moment for
+           two taps and a slider. Its `right` is set by layHudKeys() below. */
+        '<button class="snd" id="shSndHud" aria-label="Звук"><span data-snd-ico></span></button>'+
         /* An empty CFG.hint hides the pill entirely rather than rendering an empty one.
            A game that starts on the player's first drag has already been told what to do
            by the menu — repeating it over a run that is underway is just clutter. */
@@ -4070,6 +4356,26 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
       '</div>'+
     '</div>');
     document.body.appendChild(root);
+
+    /* TOP-RIGHT HUD KEYS, laid out right-to-left in ONE pass: [speed] [mute] [flag],
+       then the progress bar's right edge stops where the last of them starts.
+       They used to each carry a hardcoded `right:` in shell.css, which is why a game
+       with both a fast-forward key and a progress bar drew the chequered flag directly
+       underneath the button — both sat at right:14px. Doing it here means adding a key
+       is one line rather than a re-tune of three CSS values that nobody can see are
+       related. Card units: this is inside the 450x800 card. */
+    (function layHudKeys(){
+      const hud = $('shGhud'); if (!hud) return;
+      let r = 14;
+      const put = (n, w)=>{ if (!n) return; n.style.right = r + 'px'; r += w + 8; };
+      put($('shSpeed'), 56);
+      put($('shSndHud'), 44);
+      if (CFG.progressBar !== false){
+        put(hud.querySelector('.gflag'), 26);
+        const bar = hud.querySelector('.prog');
+        if (bar) bar.style.right = r + 'px';
+      }
+    })();
 
     // ---------- BOTTOM NAV (a SIBLING of the card — see the .nav CSS note) ----------
     document.body.appendChild(el('<nav id="shNav">'+
@@ -4143,8 +4449,26 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
       '<div class="phead grey">ВЫЙТИ?</div>'+
       '<div class="pbody">'+
         '<div class="muted" id="shQuitInfo">Прогресс на этом уровне будет потерян.</div>'+
+        /* THE PAUSE MENU'S SOUND CONTROLS. This panel is the only in-run stop the shell
+           has — askQuit() pauses the game before it opens — so it is where "turn the
+           music down without losing my board" has to live. A separate settings overlay
+           on top of this one would be an overlay over a paused game whose only safe
+           exits are ПРОДОЛЖИТЬ and ВЫЙТИ; inlining the controls avoids that entirely. */
+        audioBoxHTML()+
         '<button class="btn primary big-btn" id="shQuitResume">ПРОДОЛЖИТЬ</button>'+
         '<button class="btn ghost sub" id="shQuitYes" style="width:100%">Выйти в меню</button>'+
+      '</div>'+
+    '</div></div>'));
+
+    /* SOUND SETTINGS — opened from the ЗВУК button on the home rail. Scrim-dismissable
+       and with an X, unlike the panels above: nothing is paused behind it and nothing
+       is waiting on an answer, so every way out of it is safe. */
+    document.body.appendChild(el('<div class="sh-ov" id="shSettings" data-scrim><div class="panel">'+
+      '<button class="btn pclose ghost" data-close><img src="'+ic('close')+'"></button>'+
+      '<div class="phead">ЗВУК</div>'+
+      '<div class="pbody">'+
+        audioBoxHTML()+
+        '<div class="muted">Настройка сохраняется вместе с прогрессом</div>'+
       '</div>'+
     '</div></div>'));
 
@@ -4247,6 +4571,8 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
     on('shMoreBtn', openMore);   // the RAIL BUTTON; 'shMore' is the overlay it opens
     on('shQuit', askQuit);
     on('shSpeed', cycleSpeed);
+    on('shSndRail', openSettings);
+    on('shSndHud', toggleSound);
     on('shQuitResume', endQuitAsk);
     on('shQuitYes', ()=>{ endQuitAsk(); quitToHome(); });
     on('shWinDouble', doubleCoins);
@@ -4308,6 +4634,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
          SDK can change audio: initial state, onAudioEnabledChange, pause and resume. */
       SDK.onAudioChange = (muted)=> applyMute(!!muted);
       applyMute(SDK.audioMuted);            // adopt whatever the host already decided
+      bindAudioControls();
       bindLayout();
       if (CFG.subscribe) maybeSubscribe();      // permanent — up from the first frame
 
@@ -4338,6 +4665,11 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
            the local cache had and we must not treat "no data" as "new player". */
         if (res && res.ok) applySave(res.data);
         SDK.setSaveRef(S);
+        /* The cloud save can carry a DIFFERENT sound setting from the local one we
+           booted with — a player who muted on their phone expects it muted here too.
+           Re-apply and repaint, or the master gain keeps the pre-restore level and the
+           panel shows a number the game is not actually playing at. */
+        applyMute();
         rollMission(); regenTick(); showHome();
         /* gameReady means PLAYABLE, not "menu drawn". A game with its own async loading
            calls Shell.splashHold() before init and Shell.splashDone() when it's ready;
@@ -4432,8 +4764,22 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
     /** The page's ONE AudioContext, woken if the browser parked it. A game's own SFX
         must use this rather than building a second context. May be null. */
     audio: audioWake,
+    /** WHERE TO CONNECT. The shell's master gain — the node the player's volume slider
+        drives. A game's audio graph must end here and NOT at ctx.destination, or its
+        SFX are the one thing on the page the volume control cannot turn down. */
+    audioOut,
     /** True when audio must be silent — host mute OR the player's own toggle. */
     get muted(){ return audioMuted(); },
+    /** The player's volume, 0..1 (the slider alone — it does not fold in mute). */
+    get volume(){ return volume(); },
+    /** Set the volume, 0..1. Persists, repaints the controls, ramps the master gain. */
+    setVolume(v){ setVolume(v, true); },
+    /** The player's own on/off switch, independent of the host's mute. */
+    get soundOn(){ return S.sound !== false; },
+    /** Flip that switch — the same thing the HUD key and the panel toggle do. */
+    toggleSound,
+    /** Open the sound settings panel (the home rail's ЗВУК button). */
+    openSettings,
     /** Re-apply the current mute state (call after your audio system initialises). */
     applyMute: ()=> applyMute(),
 
@@ -4628,6 +4974,8 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      • saves:    localStorage          →  Shell.saveGameState()  (Web Storage is banned)
      • win/lose: its own banner        →  Shell.levelComplete/levelFailed
      • audio:    its own AudioContext  →  Shell.audio(), and obeys the host mute
+     • volume:   a fixed master gain    →  connected to Shell.audioOut(), so the player's
+                                           own slider turns the game's SFX too
      • boot:     started itself        →  waits for the shell to call Game.startLevel(n)
      • added:    host pause/resume, so YouTube can freeze the run cleanly
    ════════════════════════════════════════════════════════════════════════════ */
@@ -5924,7 +6272,13 @@ addEventListener('resize', resize);
 /* ============================================================== SOUND */
 /* Tiny WebAudio synth — no asset files, nothing to load, nothing to fail.
    Everything is short, quiet and slightly detuned per hit so repeats don't
-   turn into a machine gun. Set SFX = false to mute the game entirely. */
+   turn into a machine gun. Set SFX = false to mute the game entirely.
+
+   VOLUME is not handled here. Every voice ends at `master`, which is connected to the
+   SHELL's master gain (Shell.audioOut) — one node, upstream of both the game's SFX and
+   the shell's UI blips, and that is the node the player's slider turns. Do not add a
+   second volume of our own: two independent volumes multiply, and the number the panel
+   shows stops being the number the player hears. */
 const SFX = true;
 let actx = null;
 let master = null;
@@ -5946,7 +6300,12 @@ function audioReady(){
       if (!actx) return null;
       master = actx.createGain();
       master.gain.value = 0.5;
-      master.connect(actx.destination);
+      /* Hang off the SHELL's master gain, not the raw destination. That node is where
+         the player's volume slider lives, so connecting here is the whole reason the
+         slider moves the ants' footsteps and not just the menu blips. Falls back to the
+         destination if the shell is absent (the prototype ran standalone). */
+      const out = (window.Shell && Shell.audioOut) ? Shell.audioOut() : null;
+      master.connect(out || actx.destination);
     } catch(e){ actx = null; return null; }
   }
   if (actx.state !== 'running'){ try { actx.resume(); } catch(e){} }
