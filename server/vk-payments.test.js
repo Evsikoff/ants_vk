@@ -1,38 +1,30 @@
 'use strict';
 
+/* Tests for what is left of the payment service after the key check came out of the
+   purchase flow. The game no longer calls this file at all — it grants on
+   VKWebAppShowOrderBox's own `success` — so what is tested here is the one endpoint
+   VK itself calls: pricing the dialog, and keeping an honest, idempotent ledger of
+   what was charged. */
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
 const APP_ID = '6736218';
 const APP_SECRET = 'wvl68m4dR1UpLrVRli';
+const USER_ID = '494075';
 const storeFile = path.join(os.tmpdir(), `ants-vk-payments-${process.pid}.json`);
 
 process.env.VK_APP_ID = APP_ID;
 process.env.VK_APP_SECRET = APP_SECRET;
 process.env.VK_STORE = storeFile;
-process.env.VK_ALLOWED_ORIGINS = 'https://game.example';
 
 try { fs.unlinkSync(storeFile); } catch (_) {}
 
-const {
-  handleCallback,
-  handleVerify,
-  launchSignOK,
-  store,
-  server,
-  CFG
-} = require('./vk-payments');
-
-const launch = Object.fromEntries(new URL(
-  'https://example.com/?vk_user_id=494075&vk_app_id=6736218&vk_is_app_user=1' +
-  '&vk_are_notifications_enabled=1&vk_language=ru&vk_access_token_settings=' +
-  '&vk_platform=android&sign=htQFduJpLxz7ribXRZpDFUH-XEUhC9rBPTJkjUFEkRA'
-).searchParams);
+const { handleCallback, store, CFG } = require('./vk-payments');
 
 function response() {
   return {
@@ -46,11 +38,16 @@ function response() {
   };
 }
 
+function sign(params) {
+  const base = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('');
+  return crypto.createHash('md5').update(base + APP_SECRET, 'utf8').digest('hex');
+}
+
 function paymentParams(extra) {
   const params = {
     notification_type: 'order_status_change_test',
     app_id: APP_ID,
-    user_id: launch.vk_user_id,
+    user_id: USER_ID,
     receiver_id: '1',
     order_id: '1001',
     item: 'ants_lives_refill',
@@ -58,16 +55,29 @@ function paymentParams(extra) {
     status: 'chargeable',
     ...extra
   };
-  const base = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('');
-  params.sig = crypto.createHash('md5').update(base + APP_SECRET, 'utf8').digest('hex');
+  params.sig = sign(params);
   return params;
 }
 
-test('launch params use the protected app secret', () => {
-  assert.equal(launchSignOK(launch), true);
+test('get_item prices the dialog from the catalogue', () => {
+  const params = { notification_type: 'get_item_test', app_id: APP_ID, user_id: USER_ID, item: 'ants_no_ads' };
+  params.sig = sign(params);
+  const priced = response();
+  handleCallback(params, priced);
+  assert.equal(priced.json().response.item_id, 'ants_no_ads');
+  assert.equal(priced.json().response.price, 20);
 });
 
-test('confirmed orders are durable, idempotent and returned by /vk/verify', () => {
+test('an unknown item is rejected instead of guessed at', () => {
+  const params = { notification_type: 'get_item_test', app_id: APP_ID, user_id: USER_ID, item: 'nope' };
+  params.sig = sign(params);
+  const res = response();
+  handleCallback(params, res);
+  assert.equal(res.json().error.error_code, 20);
+  assert.equal(res.json().error.critical, true);
+});
+
+test('confirmed orders are durable and idempotent', () => {
   const first = response();
   handleCallback(paymentParams(), first);
   assert.equal(first.status, 200);
@@ -76,51 +86,47 @@ test('confirmed orders are durable, idempotent and returned by /vk/verify', () =
   const duplicate = response();
   handleCallback(paymentParams(), duplicate);
   assert.equal(duplicate.json().response.order_id, 1001);
-  assert.equal(store.ordersFor(launch.vk_user_id).length, 1);
-  assert.equal(store.all(launch.vk_user_id).ants_lives_refill, 1);
-
-  const verify = response();
-  handleVerify(JSON.stringify({ item: 'ants_lives_refill', launch }), verify);
-  const payload = verify.json();
-  assert.equal(payload.granted, true);
-  assert.equal(payload.status, 'confirmed');
-  assert.deepEqual(payload.orders.map(o => o.order_id), ['1001']);
+  assert.equal(store.countFor(USER_ID, 'ants_lives_refill'), 1);
+  assert.equal(store.getOrder('1001').status, 'confirmed');
 });
 
 test('each consumable order has its own id and refunds leave it in the ledger', () => {
   const second = response();
   handleCallback(paymentParams({ order_id: '1002' }), second);
-  assert.equal(store.all(launch.vk_user_id).ants_lives_refill, 2);
+  assert.equal(store.countFor(USER_ID, 'ants_lives_refill'), 2);
 
   const refunded = response();
   handleCallback(paymentParams({ order_id: '1002', status: 'refunded' }), refunded);
   assert.equal(refunded.json().response.order_id, 1002);
-  assert.equal(store.all(launch.vk_user_id).ants_lives_refill, 1);
+  assert.equal(store.countFor(USER_ID, 'ants_lives_refill'), 1);
   assert.equal(store.getOrder('1002').status, 'refunded');
-  assert.deepEqual(store.ordersFor(launch.vk_user_id).map(o => o.status), ['confirmed', 'refunded']);
 });
 
-test('same-origin verification works without a CORS allowlist', async t => {
-  const old = CFG.allowedOrigins.slice();
-  CFG.allowedOrigins.length = 0;
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  t.after(() => CFG.allowedOrigins.push(...old));
+test('a bad signature is refused while a secret is configured', () => {
+  const res = response();
+  handleCallback(paymentParams({ order_id: '1003', sig: 'deadbeef' }), res);
+  assert.equal(res.json().error.error_code, 10);
+  assert.equal(store.seenOrder('1003'), false);
+});
 
-  const port = server.address().port;
-  const result = await new Promise((resolve, reject) => {
-    const req = http.request({
-      host: '127.0.0.1', port, path: '/vk/verify', method: 'OPTIONS',
-      headers: { Host: 'game.example', Origin: 'https://game.example' }
-    }, res => {
-      res.resume();
-      res.on('end', () => resolve({ status: res.statusCode, origin: res.headers['access-control-allow-origin'] }));
-    });
-    req.on('error', reject); req.end();
-  });
+/* The point of making the secret optional: a key that was never configured must not
+   be able to take the storefront down, because VK prices the dialog from get_item. */
+test('with no secret configured the callback still prices and records', t => {
+  const old = CFG.appSecret;
+  CFG.appSecret = '';
+  t.after(() => { CFG.appSecret = old; });
 
-  assert.equal(result.status, 204);
-  assert.equal(result.origin, 'https://game.example');
+  const priced = response();
+  handleCallback({ notification_type: 'get_item_test', app_id: APP_ID, user_id: USER_ID, item: 'ants_lives_refill' }, priced);
+  assert.equal(priced.json().response.price, 1);
+
+  const charged = response();
+  handleCallback({
+    notification_type: 'order_status_change_test', app_id: APP_ID, user_id: USER_ID,
+    receiver_id: '1', order_id: '1004', item: 'ants_lives_refill', item_price: '1', status: 'chargeable'
+  }, charged);
+  assert.equal(charged.json().response.order_id, 1004);
+  assert.equal(store.seenOrder('1004'), true);
 });
 
 test.after(() => {

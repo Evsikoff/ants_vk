@@ -196,14 +196,7 @@
     interstitialChance: 0.5,
     /* How long before the banner's close button appears. An interstitial that can be
        dismissed in zero milliseconds is an impression nobody saw. */
-    bannerCloseAfterMs: 2000,
-    /* Same-origin by default. If the payment service lives elsewhere, replace this
-       with its absolute HTTPS URL and add this app's exact origin to
-       VK_ALLOWED_ORIGINS on that service. The client probes this endpoint BEFORE it
-       opens VK's payment dialog, so a deployment mistake cannot charge a player and
-       only then discover that verification is unreachable. */
-    orderVerifyUrl: '/vk/verify',
-    orderVerifyTimeoutMs: 5000
+    bannerCloseAfterMs: 2000
   };
 
   /* ── LOG ───────────────────────────────────────────────────────────────────
@@ -468,49 +461,30 @@
   /* ==========================================================================
      3. PURCHASES — VK ONLY
      ========================================================================== */
-  /** Open VK's payment window for a product known to the payment callback.
+  /** Open VK's payment window for an item registered in the app's payment settings.
    *
-   *  🚨 THE CLIENT RESPONSE IS NOT PROOF OF PAYMENT. VKWebAppShowOrderBox resolves
-   *  `{status:'success'|'cancel'|'fail'}` and nothing else — no order id, no
-   *  signature, nothing a server could check. It says "the dialog closed this way",
-   *  which a modified client can say too. The authoritative event is VK's
-   *  server-to-server `order_status_change` notification, handled by
-   *  server/vk-payments.js. A bridge rejection is reported as `unknown`, not `fail`:
-   *  m.vk.com has returned client_error after accepting test payments, and the caller
-   *  must still reconcile the server ledger before telling the player it failed. */
+   *  THE DIALOG'S ANSWER IS THE WHOLE FLOW. VKWebAppShowOrderBox resolves
+   *  `{status:'success'|'cancel'|'fail'}`, and that is exactly what the official
+   *  documentation offers a mini app: `success` means VK charged the player and the
+   *  item is granted right there, in the page. There is no signature in this response
+   *  and nothing here for a key to verify — the game used to hold every purchase
+   *  behind an HMAC handshake with a backend, which is why nobody could buy anything
+   *  when that backend was not reachable. That gate is gone.
+   *
+   *  A bridge REJECTION is reported as `unknown` rather than `fail`, because the two
+   *  deserve different words to the player: m.vk.com has been seen rejecting the
+   *  promise after the payment itself went through, and telling that player their
+   *  purchase failed is worse than telling them the result is unclear.
+   *
+   *  Both response shapes are accepted: current clients answer with `status`, older
+   *  ones with `{success:true}`. */
   function order(itemId) {
-    if (!ON || !ENV.iapAllowed || !CONF.orderVerifyUrl) return Promise.resolve('fail');
+    if (!ON || !ENV.iapAllowed) return Promise.resolve('fail');
     return send('VKWebAppShowOrderBox', { type: 'item', item: String(itemId) }).then(function (r) {
       if (!r.ok) return 'unknown';
-      var status = (r.data && r.data.status) || 'fail';
-      return status;
-    });
-  }
-
-  /** Ask our own backend whether it has actually been paid for this item. The launch
-   *  params are forwarded verbatim BECAUSE they carry `sign` — that HMAC is what lets
-   *  the server prove the request came from a real VK launch for this user, rather than
-   *  from anyone who found the URL. */
-  function verify(itemId) {
-    if (!CONF.orderVerifyUrl) return Promise.resolve(null);
-    var body = { item: String(itemId), launch: ENV.params };
-    var request = fetch(CONF.orderVerifyUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-      .then(function (res) { return res.ok ? res.json() : null; })
-      .then(function (j) { return j && Array.isArray(j.orders) ? j : null; })
-      .catch(function (e) { log('order verify failed: ' + e); return null; });
-    return new Promise(function (resolve) {
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) return; settled = true;
-        log('order verify timed out'); resolve(null);
-      }, CONF.orderVerifyTimeoutMs);
-      request.then(function (value) {
-        if (settled) return; settled = true; clearTimeout(timer); resolve(value);
-      });
+      var d = r.data || {};
+      if (d.status) return String(d.status);
+      return d.success === true ? 'success' : 'fail';
     });
   }
 
@@ -705,9 +679,8 @@
     showAd: showAd,
 
     /* --- purchases --- */
-    get iapAvailable() { return ON && !!ENV.iapAllowed && !!CONF.orderVerifyUrl; },
+    get iapAvailable() { return ON && !!ENV.iapAllowed; },
     order: order,
-    verify: verify,
 
     /* --- viewport --- */
     get insets() { return insets; },
@@ -2203,10 +2176,10 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
        below folds away, which is what "полностью скройте витрину" has to mean if
        it is to survive someone opening devtools.
          { id, name, price, icon, desc, grant:{…}, thanks }
-       `id` MUST match both the client catalogue and CATALOGUE in the payment
-       callback: it is the string VK echoes to `get_item` and
-       `order_status_change`.
-       `grant` is applied only AFTER the purchase is confirmed — see buyVK(). */
+       `id` MUST match the item registered in the app's payment settings: it is the
+       string VK echoes to `get_item`, which is what prices the dialog.
+       `grant` is applied as soon as VK's payment dialog reports success — there is no
+       key check and no backend round trip in between. See buyVK(). */
     vkProducts:[],
   };
 
@@ -2226,9 +2199,9 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
        `noAds`         — bought once, forever: no interstitial, no house banner.
        `unlimitedUntil`— epoch ms; while it is in the future, lives never deplete. */
     noAds:false, unlimitedUntil:0,
-    /* Every paid order is applied at most once. The backend returns its complete
-       signed-user ledger on every sync; keeping the order ids here makes a lost HTTP
-       response or a repeated callback harmless even for consumables. */
+    /* The receipt roll: one entry per completed VK payment dialog. It is a LOG kept
+       for support and diagnostics — the entitlements themselves are the three fields
+       above, which is what the game actually reads. */
     iapOrders:{},
     /* Per-game blob. The shell knows nothing about what's in here — a puzzle board, a
        deck, a run-in-progress — it just carries it in the same cloud save as everything
@@ -3668,85 +3641,45 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      is no path to a payment dialog on a platform that should not have one. */
   function iapOn(){ return VK.iapAvailable && !!(CFG.vkProducts && CFG.vkProducts.length); }
 
-  function vkProduct(id){ return (CFG.vkProducts || []).find(p=>String(p.id)===String(id)); }
+  /** The purchase LOG — not an authority.
+   *
+   *  What the player actually owns lives in the save itself: S.noAds, S.unlimitedUntil,
+   *  S.lives. This is the receipt roll next to it, so "when did this player buy the
+   *  no-ads pack" has an answer in the save the next time support is asked. */
   function iapLedger(){
     if (!S.iapOrders || typeof S.iapOrders !== 'object' || Array.isArray(S.iapOrders)) S.iapOrders = {};
     return S.iapOrders;
   }
 
-  /** Reconcile the complete server ledger into the save.
-   *
-   *  Consumables are applied once per order_id. Permanent/time entitlements are
-   *  recomputed from all currently confirmed server orders, which also lets a
-   *  refunded order disappear without trusting stale client state. */
-  function applyVKOrders(payload){
-    if (!payload || !Array.isArray(payload.orders)) return { ok:false, applied:[] };
+  function recordPurchase(item){
     const ledger = iapLedger();
-    const orders = payload.orders.slice().sort((a,b)=>(Number(a.at)||0)-(Number(b.at)||0));
-    const applied = [];
-    let changed = false;
-
-    for (const o of orders){
-      const id = String(o && o.order_id || '');
-      const item = String(o && o.item || '');
-      if (!id || !item) continue;
-      const prev = ledger[id];
-
-      if (o.status === 'refunded'){
-        if (!prev || prev.status !== 'refunded'){
-          ledger[id] = { item, status:'refunded', at:Number(o.at)||Number(prev && prev.at)||0 };
-          changed = true;
-        }
-        continue;
-      }
-      if (o.status !== 'confirmed' || (prev && prev.status === 'confirmed')) continue;
-
-      const p = vkProduct(item);
-      if (!p) continue;                 // keep it unprocessed until this build knows the product
-      const g = p.grant || {};
-      if (g.lives === 'max'){ S.lives = CFG.livesMax; S.lastLifeLostAt = 0; }
-      else if (g.lives){ S.lives = Math.min(CFG.livesMax, S.lives + g.lives); S.lastLifeLostAt = 0; }
-      if (g.gems)  S.gems  = Math.max(0, S.gems  + g.gems);
-      if (g.coins) S.coins = Math.max(0, S.coins + g.coins);
-      ledger[id] = { item, status:'confirmed', at:Number(o.at)||now() };
-      applied.push(item); changed = true;
-    }
-
-    const permanent = (CFG.vkProducts || []).filter(p=>p.grant && p.grant.noAds);
-    if (permanent.length){
-      const active = orders.some(o=>o.status === 'confirmed' && permanent.some(p=>String(p.id)===String(o.item)));
-      if (S.noAds !== active){ S.noAds = active; changed = true; }
-    }
-
-    const timed = (CFG.vkProducts || []).filter(p=>p.grant && p.grant.unlimitedHours);
-    if (timed.length){
-      let until = 0;
-      for (const o of orders){
-        if (o.status !== 'confirmed') continue;
-        const p = timed.find(x=>String(x.id)===String(o.item)); if (!p) continue;
-        const saved = ledger[String(o.order_id)];
-        const at = Number(o.at) || Number(saved && saved.at) || now();
-        until = Math.max(until, at) + Number(p.grant.unlimitedHours) * 3600000;
-      }
-      if (S.unlimitedUntil !== until){ S.unlimitedUntil = until; changed = true; }
-    }
-
-    if (changed){
-      flushSave(); renderMeta(); renderIap();
-      if ($('shLives')) hide('shLives');
-    }
-    return { ok:true, applied };
+    let key = 'vk_' + now();
+    while (ledger[key]) key += '_';       // two taps inside the same millisecond
+    ledger[key] = { item:String(item), status:'confirmed', at:now() };
   }
 
-  function syncVKOrders(silent, probeItem){
-    if (!iapOn()) return Promise.resolve({ ok:false, applied:[] });
-    const item = probeItem || (CFG.vkProducts[0] && CFG.vkProducts[0].id);
-    return VK.verify(item).then(payload=>{
-      if (!payload) return { ok:false, applied:[] };
-      const result = applyVKOrders(payload);
-      if (!silent && result.applied.length) toast('Оплаченная покупка активирована');
-      return result;
-    }, ()=>({ ok:false, applied:[] }));
+  /** Hand over what the product promises, once, on VK's own `success`.
+   *
+   *  Everything here is idempotent in the only sense that matters offline: it is
+   *  called exactly once per completed dialog, and the state it writes is saved
+   *  immediately — a purchase must survive the player closing the app on the very
+   *  next tap. */
+  function grantVKProduct(p){
+    const g = (p && p.grant) || {};
+    if (g.lives === 'max'){ S.lives = CFG.livesMax; S.lastLifeLostAt = 0; }
+    else if (g.lives){ S.lives = Math.min(CFG.livesMax, S.lives + g.lives); S.lastLifeLostAt = 0; }
+    if (g.gems)  S.gems  = Math.max(0, S.gems  + g.gems);
+    if (g.coins) S.coins = Math.max(0, S.coins + g.coins);
+    if (g.noAds) S.noAds = true;
+    if (g.unlimitedHours){
+      /* Stacked, not overwritten. A player who buys a second day while the first one
+         is still running paid for two days and must get two. */
+      const from = Math.max(Number(S.unlimitedUntil) || 0, now());
+      S.unlimitedUntil = from + Number(g.unlimitedHours) * 3600000;
+    }
+    recordPurchase(p.id);
+    flushSave(); renderMeta(); renderIap();
+    if ($('shLives')) hide('shLives');
   }
 
   /* A permanent entitlement the player already owns is not an offer. Leaving a bought
@@ -3774,73 +3707,36 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
     });
   }
 
-  const VK_ORDER_POLL_MS = [0, 500, 1000, 2000, 4000];
   let _vkPurchaseBusy = false;
 
-  function waitForVKOrder(itemId, known, step){
-    const i = step || 0;
-    return new Promise(resolve=>setTimeout(resolve, VK_ORDER_POLL_MS[i] || 0)).then(()=>
-      VK.verify(itemId).then(payload=>{
-        if (payload){
-          const fresh = payload.orders.some(o=>o.status === 'confirmed' &&
-            String(o.item) === String(itemId) && !known.has(String(o.order_id)));
-          applyVKOrders(payload);
-          if (fresh) return true;
-        }
-        return i + 1 < VK_ORDER_POLL_MS.length ? waitForVKOrder(itemId, known, i + 1) : false;
-      }, ()=> i + 1 < VK_ORDER_POLL_MS.length ? waitForVKOrder(itemId, known, i + 1) : false)
-    );
-  }
-
-  function queueVKRecovery(p, known){
-    let recovered = false;
-    [15000, 60000].forEach(ms=>setTimeout(()=>{
-      if (recovered || !iapOn()) return;
-      VK.verify(p.id).then(payload=>{
-        if (!payload) return;
-        const fresh = payload.orders.some(o=>o.status === 'confirmed' &&
-          String(o.item) === String(p.id) && !known.has(String(o.order_id)));
-        applyVKOrders(payload);
-        if (fresh){ recovered = true; toast(p.thanks || 'Спасибо! Покупка активирована'); }
-      });
-    }, ms));
-  }
-
-  /** Never charge until the verification service has answered. After the dialog,
-   *  trust only a new confirmed order_id from the callback ledger. `unknown` is
-   *  deliberately reconciled too because mobile web can reject the bridge promise
-   *  after the payment itself succeeded. */
+  /** BUY. Open VK's dialog, grant on its answer, and that is the entire flow.
+   *
+   *  There is no verification round trip here any more — no launch-param HMAC posted
+   *  to a backend, no polling a server ledger for a confirmed order id, no waiting on
+   *  a `sign` the page cannot check itself. The official flow ends where VK ends it:
+   *  `success` means the player was charged.
+   *
+   *  What that costs, stated plainly: a bridge rejection AFTER a real charge
+   *  (`unknown`) can no longer be reconciled from anywhere, because the client is now
+   *  the only bookkeeper. The player is told the result is unclear rather than that it
+   *  failed, which is the honest version of what the game knows. */
   function buyVK(p){
     if (!iapOn() || _vkPurchaseBusy) return;
+    /* Never open a dialog for something already owned — VK charges for it regardless. */
+    if (p.grant && p.grant.noAds && S.noAds){ toast('Покупка уже активирована'); return; }
     _vkPurchaseBusy = true; renderIap();
-    let known = null, bridgeStatus = null;
 
-    syncVKOrders(true, p.id).then(pre=>{
-      if (!pre.ok){ toast('Платежи временно недоступны — попробуйте позже'); return null; }
-      /* A delayed order may have landed between sessions. If this preflight just
-         recovered the exact product the player tapped, stop here: opening a new
-         dialog would charge them twice for what looked like one missing purchase. */
-      if (pre.applied.includes(String(p.id))){
-        toast(p.thanks || 'Спасибо! Покупка активирована'); return null;
+    VK.order(p.id).then(status=>{
+      if (status === 'success'){
+        grantVKProduct(p);
+        toast(p.thanks || 'Спасибо! Покупка активирована');
+        return;
       }
-      if (p.grant && p.grant.noAds && S.noAds){ toast('Покупка уже активирована'); return null; }
-      known = new Set(Object.keys(iapLedger()));
-      return VK.order(p.id);
-    }).then(status=>{
-      if (status == null) return null;
-      bridgeStatus = status;
       /* Closing the dialog is not an error and cannot have produced a charge. */
-      if (status === 'cancel') return null;
-      toast('Подтверждаем покупку…');
-      return waitForVKOrder(p.id, known, 0);
-    }).then(confirmed=>{
-      if (confirmed == null || bridgeStatus === 'cancel') return;
-      if (confirmed){ toast(p.thanks || 'Спасибо! Покупка активирована'); return; }
-      queueVKRecovery(p, known);
-      if (bridgeStatus === 'fail')
-        toast('Покупка не подтверждена; если VK списал оплату, начислим автоматически');
-      else
-        toast('Платёж обрабатывается — покупка начислится автоматически');
+      if (status === 'cancel') return;
+      toast(status === 'unknown'
+        ? 'Не удалось получить ответ об оплате — если голоса списались, напишите нам'
+        : 'Покупка не завершена');
     }).catch(()=> toast('Платежи временно недоступны — попробуйте позже'))
       .finally(()=>{ _vkPurchaseBusy = false; renderIap(); });
   }
@@ -4441,10 +4337,6 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
         if (res && res.ok) applySave(res.data);
         SDK.setSaveRef(S);
         rollMission(); regenTick(); showHome();
-        /* Callback delivery can outlive the payment dialog or the whole previous
-           session. Reconcile every confirmed order after the save is restored, so a
-           paid item never requires the player to press BUY a second time. */
-        if (iapOn()) syncVKOrders(true);
         /* gameReady means PLAYABLE, not "menu drawn". A game with its own async loading
            calls Shell.splashHold() before init and Shell.splashDone() when it's ready;
            in that case the ready signal waits for it. Signalling early is the kit's
@@ -4667,8 +4559,10 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
           'window.vkBridge is missing — the inlined bundle did not run, nothing will work');
       chk(!!VK.env.appId, 'vk_app_id present in the launch params',
           'no vk_app_id in the URL — storage, ads and payments will all be refused', true);
+      /* Nothing in the purchase path needs this any more — it is kept as a symptom
+         check, because an unsigned launch means the page was not opened by VK. */
       chk(!!VK.env.sign, 'launch params are signed',
-          'no `sign` in the launch params — the backend cannot verify who this is', true);
+          'no `sign` in the launch params — this is not a real VK launch (expected only under ?vk=1)', true);
 
       /* The single most expensive mistake this port can make. */
       chk(!(VK.isOK && iapOn()),
@@ -4679,8 +4573,6 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
         const bad = CFG.vkProducts.filter(p=> !p.id || !/^[\w.\-]+$/.test(String(p.id)));
         chk(bad.length === 0, 'every product has a usable item_id',
             'products with a missing/odd item_id: ' + bad.map(p=>p.name||'?').join(', '));
-        chk(!!VK.conf.orderVerifyUrl, 'purchases are server-verified',
-            'NO BACKEND CONFIGURED (VKP.conf.orderVerifyUrl is empty) — the storefront must stay disabled');
       }
 
       chk(!!CFG.vkProducts, 'vkProducts declared', 'CFG.vkProducts missing', true);
