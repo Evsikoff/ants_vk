@@ -187,13 +187,14 @@
     /* How long to wait for the client to acknowledge the handshake before getting on
        with boot anyway. A real client answers in milliseconds. */
     initTimeoutMs: 3000,
-    /* The house banner shown on the other side of the Next-Level coin flip. */
+    /* The house banner that fills a Next-Level break VK could not fill itself. */
     bannerImage: 'banner.webp',
     bannerUrl:   'https://vk.ru/market/product/nastolnaya-igra-quotadmiral-taktika-risk-i-sudbaquot-kompaktnaya-versia-227786453-8922274',
-    /* Probability that the Next-Level tap goes to an INTERSTITIAL rather than the
-       banner. 0.5 is the brief's 50/50; it lives here as a constant so the split can be
-       retuned without touching the transition code. */
-    interstitialChance: 0.5,
+    /* Every Next-Level tap asks VK for an INTERSTITIAL — there is no coin flip any
+       more. The house banner is only a FALLBACK: it fills the pause when VK has
+       nothing to show (3-minute cooldown, empty fill, a call that never settles).
+       Set this to false to leave that pause empty instead, i.e. VK ads or nothing. */
+    bannerFallback: true,
     /* How long before the banner's close button appears. An interstitial that can be
        dismissed in zero milliseconds is an impression nobody saw. */
     bannerCloseAfterMs: 2000
@@ -1751,7 +1752,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      and nothing reaches for `vkBridge` directly — one seam, not twenty. */
   const VK = global.VKP || { active:false, isOK:false, iapAvailable:false,
                              adSupported(){ return false; }, log(){},
-                             conf:{ interstitialChance:0.5 }, insets:{top:0,right:0,bottom:0,left:0} };
+                             conf:{ bannerFallback:true }, insets:{top:0,right:0,bottom:0,left:0} };
 
   /* 🚨 `!VK.active` IS LOAD-BEARING, NOT BELT-AND-BRACES. The clause below accepts
      "we are inside an iframe" as proof of Playables — and a VK Mini App IS an
@@ -2872,15 +2873,17 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
   const AD_WATCHDOG_MS = 6000;
 
   /* ── VK: THE NEXT-LEVEL BREAK ────────────────────────────────────────────────
-     The brief's rule, implemented literally: every tap of СЛЕДУЮЩИЙ УРОВЕНЬ flips a
-     coin — heads is a VK interstitial, tails is the house banner. It REPLACES the
-     Playables cadence (`due`) on VK rather than layering on top of it; two ad
-     schedules stacked would show roughly twice what either intends.
+     Every tap of СЛЕДУЮЩИЙ УРОВЕНЬ asks VK for an interstitial. There is no coin
+     flip any more: the house banner is never CHOSEN over a VK ad, it only stands in
+     when VK itself has nothing to give. This REPLACES the Playables cadence (`due`)
+     on VK rather than layering on top of it; two ad schedules stacked would show
+     roughly twice what either intends.
 
-     Why the loser of the flip still gets shown something: an interstitial that the
-     3-minute cooldown blocks, or that VK has no fill for, would otherwise be a break
-     with nothing in it — the player waits for a beat and sees a level change. Falling
-     through to the banner means the slot is always worth the pause.
+     Why the banner still exists at all: an interstitial that the 3-minute cooldown
+     blocks, or that VK has no fill for, would otherwise be a break with nothing in it
+     — the player waits for a beat and sees a level change. Falling through to the
+     banner means the slot is always worth the pause. `CONF.bannerFallback:false`
+     turns that fallback off, for a VK-ads-or-nothing break.
 
      The three anti-freeze guards from the Playables path are all still here, because
      the failure they prevent (an ad the host takes and never returns from, on the one
@@ -2897,26 +2900,25 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
        way to turn a paying player into a refund request. */
     if (S.noAds) return go();
 
-    const banner = ()=> showHouseBanner(go);
+    /* A fallback, not an alternative: reached only when VK declined the slot. */
+    const banner = ()=> ((VK.conf.bannerFallback !== false) ? showHouseBanner(go) : go());
 
-    if (Math.random() < (VK.conf.interstitialChance ?? 0.5)){
-      let settled = false;
-      const wd = setTimeout(()=>{                                  // guard 2
-        if (settled) return; settled = true;
-        SDK.logError('VK interstitial watchdog fired — falling through to the banner');
-        banner();
-      }, AD_WATCHDOG_MS);
-      SDK.tryShowInterstitial((shown)=>{                           // guard 1
-        if (settled) return; settled = true;
-        clearTimeout(wd);
-        if (SDK.isPaused){                                         // guard 3
-          SDK.isPaused = false;
-          try { if (SDK.onResume) SDK.onResume(); } catch(_){}
-          SDK.logError('VK interstitial finished while still paused — force-resumed');
-        }
-        if (shown) go(); else banner();
-      });
-    } else banner();
+    let settled = false;
+    const wd = setTimeout(()=>{                                    // guard 2
+      if (settled) return; settled = true;
+      SDK.logError('VK interstitial watchdog fired — falling through to the banner');
+      banner();
+    }, AD_WATCHDOG_MS);
+    SDK.tryShowInterstitial((shown)=>{                             // guard 1
+      if (settled) return; settled = true;
+      clearTimeout(wd);
+      if (SDK.isPaused){                                           // guard 3
+        SDK.isPaused = false;
+        try { if (SDK.onResume) SDK.onResume(); } catch(_){}
+        SDK.logError('VK interstitial finished while still paused — force-resumed');
+      }
+      if (shown) go(); else banner();
+    });
   }
 
   /** The house banner. `done` is called exactly once, on whichever way it closes —
@@ -2959,7 +2961,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
   }
 
   function maybeInterstitial(due, cb){
-    /* On VK the coin flip owns this moment entirely — see vkTransitionBreak(). */
+    /* On VK the transition break owns this moment entirely — see vkTransitionBreak(). */
     if (VK.active) return vkTransitionBreak(cb);
     if (!due){ cb && cb(); return; }
     let done = false;
