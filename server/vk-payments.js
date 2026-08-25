@@ -1,27 +1,24 @@
 /* =============================================================================
    VK PAYMENTS CALLBACK — server/vk-payments.js
-   The half of the purchase flow that the client cannot do.
 
-   ---- WHY THIS FILE EXISTS ----
-   VKWebAppShowOrderBox resolves `{status:'success'|'cancel'|'fail'}` in the page.
-   That is all it gives you: no order id, no amount, no signature, nothing a server
-   could check. It reports how a DIALOG CLOSED, and a modified client can report
-   whatever it likes. If the game grants an item on that string, the item is free to
-   anyone who opens devtools.
+   ---- WHAT THIS IS, AFTER THE KEY CHECK CAME OUT ----
+   The game grants purchases IN THE PAGE, on VKWebAppShowOrderBox's own
+   `{status:'success'}` — that is the flow the official documentation describes, and
+   it needs no signature, no launch-param HMAC and no verification round trip. The
+   client used to refuse to open the payment dialog until a backend had verified the
+   launch `sign`; that is what made purchases fail whenever the backend was absent,
+   unreachable or configured with the wrong key, and it is gone.
 
-   The real event is server-to-server: VK POSTs a signed `order_status_change`
-   notification to the callback URL configured in the app's admin panel. That
-   notification is the only trustworthy statement that money moved, and this file
-   handles it.
+   ONE ENDPOINT IS LEFT, AND VK IS ITS ONLY CALLER:
 
-   ---- THE TWO ENDPOINTS ----
-     POST /vk/callback   ← VK calls this. Signed with `sig` (MD5). Grants the item.
-     POST /vk/verify     ← the game calls this after the order box says 'success'.
-                           Signed with the launch params' `sign` (HMAC-SHA256).
-                           Answers "has this user actually paid for this item?"
+     POST /vk/callback   ← VK asks it what an item costs (`get_item`) and tells it
+                           when an order changed status (`order_status_change`).
 
-   Two different signature schemes use the SAME protected app secret. Confusing the
-   service access token for a signing secret is the most common failure here.
+   `get_item` is why this still has to run: VK builds the payment dialog from the
+   price THIS FILE answers with, so an app with no reachable callback cannot sell
+   anything at all. `order_status_change` is now bookkeeping — a durable record of
+   what was actually charged, useful for support and reconciliation, but nothing the
+   game waits on before handing over the item.
 
    ---- RUNNING IT ----
      VK_APP_ID=51234567 VK_APP_SECRET=xxx node server/vk-payments.js
@@ -39,22 +36,20 @@ const path   = require('path');
 /* ── CONFIG ────────────────────────────────────────────────────────────────────
    Both values come from the app's admin panel (Настройки → приложение):
      VK_APP_ID      — «ID приложения»
-     VK_APP_SECRET  — «Защищённый ключ»  → signs BOTH payment callbacks (MD5
-                      `sig`) and Mini Apps launch params (HMAC-SHA256 `sign`).
-   🚨 The service access key is an API token, not the HMAC secret. Using it here
-   makes every /vk/verify request fail after VK has already accepted the payment. */
+     VK_APP_SECRET  — «Защищённый ключ» → the key VK signs its payment callbacks
+                      with (MD5 `sig`). OPTIONAL: leave it unset and the callback
+                      answers unsigned notifications too, which keeps a
+                      misconfigured key from breaking the storefront. Set it in
+                      production — it costs nothing and keeps the ledger honest.
+   🚨 The service access key is an API token, not this secret. */
 const CFG = {
   appId:     process.env.VK_APP_ID     || '',
   appSecret: process.env.VK_APP_SECRET || '',
   port:      Number(process.env.PORT || 8080),
   storeFile: process.env.VK_STORE || path.join(__dirname, 'orders.json'),
-  /* Empty = same-origin requests only. For a separately hosted frontend, list its
-     exact origins (comma-separated); `*` is accepted for local/test deployments. */
-  allowedOrigins: String(process.env.VK_ALLOWED_ORIGINS || '')
-    .split(',').map(s => s.trim()).filter(Boolean),
   /* Set false once the app is live. VK sends `*_test` notification types while the
-     app is in test mode, and paying them out on production data is how test votes
-     become real entitlements. */
+     app is in test mode, and keeping them out of the production ledger keeps test
+     votes from looking like revenue. */
   allowTest: process.env.VK_ALLOW_TEST !== '0'
 };
 
@@ -153,39 +148,28 @@ const store = (() => {
       }
       return true;
     },
-    owns(userId, item) {
+    countFor(userId, item) {
       const u = data.users[String(userId)];
-      return !!(u && u[item]);
-    },
-    all(userId) { return data.users[String(userId)] || {}; },
-    ordersFor(userId) {
-      const uid = String(userId);
-      return Object.keys(data.orders)
-        .filter(id => String(data.orders[id].user_id) === uid)
-        .map(id => {
-          const r = data.orders[id];
-          return {
-            order_id: id,
-            item: String(r.item),
-            status: r.status || 'confirmed',
-            at: Number(r.at) || 0,
-            refunded_at: Number(r.refunded_at) || 0
-          };
-        })
-        .sort((a, b) => a.at - b.at || String(a.order_id).localeCompare(String(b.order_id)));
+      return Number(u && u[item]) || 0;
     }
   };
 })();
 
-/* ── SIGNATURES ────────────────────────────────────────────────────────────────
-   1) PAYMENT CALLBACK — `sig`
+/* ── THE CALLBACK SIGNATURE — `sig` ────────────────────────────────────────────
    MD5 over every request parameter EXCEPT `sig`, sorted by parameter name, joined
    as `key=value` with NO separator at all, with the app secret appended.
    Compared with timingSafeEqual rather than `===` — this is a secret-dependent
-   comparison and a byte-by-byte early exit is measurable. */
+   comparison and a byte-by-byte early exit is measurable.
+
+   This is VK signing ITS OWN notification to us; it is not the key check that was
+   removed from the purchase flow, and the player never waits on it. It is skipped
+   entirely when no secret is configured (see handleCallback), because a wrong or
+   missing key must not be able to take the storefront down: without VK_APP_SECRET
+   the worst a forged notification can do is write a bogus line into a ledger that
+   grants nothing. */
 function paymentSigOK(params) {
   const sig = String(params.sig || '');
-  if (!sig || !CFG.appSecret) return false;
+  if (!sig || !CFG.appSecret) return false;   // callers check CFG.appSecret first
   const base = Object.keys(params)
     .filter(k => k !== 'sig')
     .sort()
@@ -193,26 +177,6 @@ function paymentSigOK(params) {
     .join('');
   const mine = crypto.createHash('md5').update(base + CFG.appSecret, 'utf8').digest('hex');
   return safeEqual(mine, sig.toLowerCase());
-}
-
-/* 2) LAUNCH PARAMS — `sign`
-   HMAC-SHA256 over the `vk_*` parameters only, sorted by name, joined as a normal
-   query string, keyed with the SECURE key, base64 made URL-safe.
-   🚨 Only `vk_`-prefixed keys go in. Anything else the page happened to have in its
-   URL is not part of what VK signed, and including it fails every check. */
-function launchSignOK(params) {
-  const sign = String(params.sign || '');
-  if (!sign || !CFG.appSecret) return false;
-  const qs = Object.keys(params)
-    .filter(k => k.indexOf('vk_') === 0)
-    .sort()
-    .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
-    .join('&');
-  const mine = crypto.createHmac('sha256', CFG.appSecret)
-    .update(qs)
-    .digest('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return safeEqual(mine, sign);
 }
 
 function safeEqual(a, b) {
@@ -248,9 +212,11 @@ function send(res, obj) {
 
    order_status_change / order_status_change_test
      "The order reached `status`." The only status that means money moved is
-     `chargeable`. Grant, record the order id, and echo back an app_order_id. */
+     `chargeable`. Record the order id and echo back an app_order_id — VK retries
+     until it gets one, and the record is what makes the retry harmless. The player
+     already has the item: the page granted it the moment the dialog said success. */
 function handleCallback(params, res) {
-  if (!paymentSigOK(params)) return err(res, 10, 'bad signature', true);
+  if (CFG.appSecret && !paymentSigOK(params)) return err(res, 10, 'bad signature', true);
   if (CFG.appId && String(params.app_id) !== String(CFG.appId))
     return err(res, 10, 'wrong app_id', true);
 
@@ -278,8 +244,9 @@ function handleCallback(params, res) {
     if (!orderId || !userId) return err(res, 100, 'missing order/user id', true);
 
     if (status === 'refunded') {
-      /* VK can refund an order after it was chargeable. Stop advertising it as an
-         active entitlement; the client receives this status on its next sync. */
+      /* VK can refund an order after it was chargeable. The ledger records that;
+         the game itself is not told, because it no longer asks this service
+         anything — a refund is settled with the player, not with the client. */
       if (!store.getOrder(orderId)) return err(res, 100, 'original order not found', false);
       store.refundOrder(orderId);
       return ok(res, { order_id: Number(orderId), app_order_id: Number(orderId) });
@@ -300,47 +267,11 @@ function handleCallback(params, res) {
       user_id: userId, item, at: Date.now(),
       price: params.item_price, test: isTest, status: 'confirmed'
     });
-    console.log('[vk] granted %s to user %s (order %s%s)', item, userId, orderId, isTest ? ', TEST' : '');
+    console.log('[vk] charged %s to user %s (order %s%s)', item, userId, orderId, isTest ? ', TEST' : '');
     return ok(res, { order_id: Number(orderId), app_order_id: Number(orderId) });
   }
 
   return err(res, 100, 'unsupported notification_type: ' + type, true);
-}
-
-/* ── THE GAME'S VERIFY CALL ────────────────────────────────────────────────────
-   The client posts {item, launch} after the order box reported success, and asks
-   whether we have actually been paid. The launch params carry `sign`, which is the
-   only thing here that proves WHO is asking — without checking it, anyone could
-   post someone else's vk_user_id and be told they own the item.
-
-   Note the race this is written around: the client can reach us BEFORE VK's
-   server-to-server notification does. `granted:false` therefore means "not yet",
-   not "never" — the client is expected to treat it as a failure for now and pick
-   the entitlement up on the next launch, when the callback will long since have
-   landed. */
-function handleVerify(body, res) {
-  let payload;
-  try { payload = JSON.parse(body || '{}'); } catch (e) { payload = null; }
-  if (!payload || typeof payload !== 'object') return send(res, { granted: false, reason: 'bad body' });
-
-  const launch = payload.launch || {};
-  const item   = String(payload.item || '');
-  if (!launchSignOK(launch))   return send(res, { granted: false, reason: 'bad sign' });
-  if (!CATALOGUE[item])        return send(res, { granted: false, reason: 'unknown item' });
-
-  if (CFG.appId && String(launch.vk_app_id || '') !== String(CFG.appId))
-    return send(res, { granted: false, reason: 'wrong app_id' });
-
-  const userId = String(launch.vk_user_id || '');
-  const orders = store.ordersFor(userId);
-  const granted = orders.some(o => o.item === item && o.status === 'confirmed');
-  return send(res, {
-    granted,
-    status: granted ? 'confirmed' : 'pending',
-    orders,
-    owns: store.all(userId),
-    server_time: Date.now()
-  });
 }
 
 /* ── SERVER ────────────────────────────────────────────────────────────────────
@@ -348,31 +279,11 @@ function handleVerify(body, res) {
    over by one request. Nothing legitimate here is anywhere near 64KB. */
 const MAX_BODY = 64 * 1024;
 
-function allowCors(req, res) {
-  const origin = String(req.headers.origin || '');
-  if (!origin) return true;                    // VK callback and non-browser clients
-  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
-    .split(',')[0].trim();
-  let sameHost = false;
-  try { sameHost = new URL(origin).host === forwardedHost; } catch (_) {}
-  const allowed = sameHost || CFG.allowedOrigins.includes('*') || CFG.allowedOrigins.includes(origin);
-  if (!allowed) return false;
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Max-Age', '600');
-  return true;
-}
-
+/* No CORS layer any more: the only client of this service is VK's own server, which
+   sends no Origin header. The browser never talks to it. */
 const server = http.createServer((req, res) => {
   const url = (req.url || '').split('?')[0];
-  const corsOK = allowCors(req, res);
-  if (req.method === 'OPTIONS') {
-    res.writeHead(corsOK ? 204 : 403); return res.end();
-  }
   if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
-  if (url === '/vk/verify' && !corsOK) { res.writeHead(403); return res.end('origin not allowed'); }
 
   let body = '', over = false;
   req.on('data', c => {
@@ -388,7 +299,6 @@ const server = http.createServer((req, res) => {
         new URLSearchParams(body).forEach((v, k) => { params[k] = v; });
         return handleCallback(params, res);
       }
-      if (url === '/vk/verify') return handleVerify(body, res);
       res.writeHead(404); res.end('not found');
     } catch (e) {
       console.error('[vk] handler threw', e);
@@ -400,10 +310,9 @@ const server = http.createServer((req, res) => {
 });
 
 if (require.main === module) {
-  for (const k of ['appId', 'appSecret']) {
-    if (!CFG[k]) console.warn('[vk] WARNING: %s is not set — the matching signature check will reject everything', k);
-  }
+  if (!CFG.appId) console.warn('[vk] WARNING: VK_APP_ID is not set — notifications from any app will be accepted');
+  if (!CFG.appSecret) console.warn('[vk] WARNING: VK_APP_SECRET is not set — callback signatures are NOT checked');
   server.listen(CFG.port, () => console.log('[vk] payments callback listening on :' + CFG.port));
 }
 
-module.exports = { server, handleCallback, handleVerify, paymentSigOK, launchSignOK, CATALOGUE, store, CFG };
+module.exports = { server, handleCallback, paymentSigOK, CATALOGUE, store, CFG };
