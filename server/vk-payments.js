@@ -20,11 +20,11 @@
                            Signed with the launch params' `sign` (HMAC-SHA256).
                            Answers "has this user actually paid for this item?"
 
-   Two different signature schemes with two different secrets, which is the single
-   most common way this integration is got wrong — see the notes on each.
+   Two different signature schemes use the SAME protected app secret. Confusing the
+   service access token for a signing secret is the most common failure here.
 
    ---- RUNNING IT ----
-     VK_APP_ID=51234567 VK_APP_SECRET=xxx VK_SECURE_KEY=yyy node server/vk-payments.js
+     VK_APP_ID=51234567 VK_APP_SECRET=xxx node server/vk-payments.js
    Zero dependencies, plain node:http, so it drops into whatever you already run.
    The store is a JSON file: fine for a first deploy, swap `store` for your database
    before this handles real volume — see the note on it.
@@ -37,19 +37,21 @@ const fs     = require('fs');
 const path   = require('path');
 
 /* ── CONFIG ────────────────────────────────────────────────────────────────────
-   All three come from the app's admin panel (Настройки → приложение):
+   Both values come from the app's admin panel (Настройки → приложение):
      VK_APP_ID      — «ID приложения»
-     VK_APP_SECRET  — «Защищённый ключ»  → signs the PAYMENT callbacks (MD5 `sig`)
-     VK_SECURE_KEY  — «Сервисный ключ»   → signs the LAUNCH PARAMS (HMAC `sign`)
-   🚨 These two keys are NOT interchangeable and the failure mode when they are
-   swapped is silent: every signature simply fails to match, VK retries the
-   notification for a while, and the player is charged with nothing granted. */
+     VK_APP_SECRET  — «Защищённый ключ»  → signs BOTH payment callbacks (MD5
+                      `sig`) and Mini Apps launch params (HMAC-SHA256 `sign`).
+   🚨 The service access key is an API token, not the HMAC secret. Using it here
+   makes every /vk/verify request fail after VK has already accepted the payment. */
 const CFG = {
   appId:     process.env.VK_APP_ID     || '',
   appSecret: process.env.VK_APP_SECRET || '',
-  secureKey: process.env.VK_SECURE_KEY || '',
   port:      Number(process.env.PORT || 8080),
   storeFile: process.env.VK_STORE || path.join(__dirname, 'orders.json'),
+  /* Empty = same-origin requests only. For a separately hosted frontend, list its
+     exact origins (comma-separated); `*` is accepted for local/test deployments. */
+  allowedOrigins: String(process.env.VK_ALLOWED_ORIGINS || '')
+    .split(',').map(s => s.trim()).filter(Boolean),
   /* Set false once the app is live. VK sends `*_test` notification types while the
      app is in test mode, and paying them out on production data is how test votes
      become real entitlements. */
@@ -89,8 +91,11 @@ const CATALOGUE = {
    `order_status_change` arrives again. Without the orders table the player gets the
    item twice — which for a consumable is free goods, and for a subscription-shaped
    grant like the 24-hour window is a doubled duration on every retry.
-   Swap this whole object for your database when there is one; the interface it
-   needs is four methods and no transactions. */
+   The callback is acknowledged only after an atomic file replacement succeeds. A
+   successful VK response before durable storage is a paid order that can disappear
+   forever if the process exits in the next millisecond.
+
+   Swap this object for a transactional database before running multiple instances. */
 const store = (() => {
   let data = { orders: {}, users: {} };
   try {
@@ -99,31 +104,76 @@ const store = (() => {
     data.users  = data.users  || {};
   } catch (e) { /* first run — the file does not exist yet */ }
 
-  let writing = false, dirty = false;
   function flush() {
-    if (writing) { dirty = true; return; }
-    writing = true;
     const body = JSON.stringify(data, null, 1);
-    fs.writeFile(CFG.storeFile + '.tmp', body, err => {
-      if (!err) { try { fs.renameSync(CFG.storeFile + '.tmp', CFG.storeFile); } catch (e) {} }
-      writing = false;
-      if (dirty) { dirty = false; flush(); }
-    });
+    const tmp = CFG.storeFile + '.' + process.pid + '.tmp';
+    fs.mkdirSync(path.dirname(CFG.storeFile), { recursive: true });
+    fs.writeFileSync(tmp, body, { encoding: 'utf8', mode: 0o600 });
+    try { fs.renameSync(tmp, CFG.storeFile); }
+    catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
   }
 
   return {
     seenOrder(orderId) { return Object.prototype.hasOwnProperty.call(data.orders, String(orderId)); },
-    recordOrder(orderId, rec) { data.orders[String(orderId)] = rec; flush(); },
-    grant(userId, item) {
-      const u = data.users[String(userId)] || (data.users[String(userId)] = {});
-      u[item] = (u[item] || 0) + 1;
-      flush();
+    getOrder(orderId) { return data.orders[String(orderId)] || null; },
+    recordOrder(orderId, rec) {
+      const id = String(orderId);
+      if (this.seenOrder(id)) return false;
+      const uid = String(rec.user_id), item = String(rec.item);
+      const hadUser = Object.prototype.hasOwnProperty.call(data.users, uid);
+      const u = data.users[uid] || (data.users[uid] = {});
+      const oldCount = Number(u[item] || 0);
+      data.orders[id] = { ...rec, status: rec.status || 'confirmed' };
+      u[item] = oldCount + 1;
+      try { flush(); }
+      catch (e) {
+        delete data.orders[id];
+        if (oldCount) u[item] = oldCount; else delete u[item];
+        if (!hadUser && !Object.keys(u).length) delete data.users[uid];
+        throw e;
+      }
+      return true;
+    },
+    refundOrder(orderId) {
+      const id = String(orderId), rec = data.orders[id];
+      if (!rec) return false;
+      if (rec.status === 'refunded') return true;
+      const uid = String(rec.user_id), item = String(rec.item);
+      const u = data.users[uid] || (data.users[uid] = {});
+      const oldCount = Number(u[item] || 0);
+      const oldStatus = rec.status, oldAt = rec.refunded_at;
+      rec.status = 'refunded'; rec.refunded_at = Date.now();
+      u[item] = Math.max(0, oldCount - 1);
+      try { flush(); }
+      catch (e) {
+        rec.status = oldStatus;
+        if (oldAt == null) delete rec.refunded_at; else rec.refunded_at = oldAt;
+        u[item] = oldCount;
+        throw e;
+      }
+      return true;
     },
     owns(userId, item) {
       const u = data.users[String(userId)];
       return !!(u && u[item]);
     },
-    all(userId) { return data.users[String(userId)] || {}; }
+    all(userId) { return data.users[String(userId)] || {}; },
+    ordersFor(userId) {
+      const uid = String(userId);
+      return Object.keys(data.orders)
+        .filter(id => String(data.orders[id].user_id) === uid)
+        .map(id => {
+          const r = data.orders[id];
+          return {
+            order_id: id,
+            item: String(r.item),
+            status: r.status || 'confirmed',
+            at: Number(r.at) || 0,
+            refunded_at: Number(r.refunded_at) || 0
+          };
+        })
+        .sort((a, b) => a.at - b.at || String(a.order_id).localeCompare(String(b.order_id)));
+    }
   };
 })();
 
@@ -152,13 +202,13 @@ function paymentSigOK(params) {
    URL is not part of what VK signed, and including it fails every check. */
 function launchSignOK(params) {
   const sign = String(params.sign || '');
-  if (!sign || !CFG.secureKey) return false;
+  if (!sign || !CFG.appSecret) return false;
   const qs = Object.keys(params)
     .filter(k => k.indexOf('vk_') === 0)
     .sort()
     .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
     .join('&');
-  const mine = crypto.createHmac('sha256', CFG.secureKey)
+  const mine = crypto.createHmac('sha256', CFG.appSecret)
     .update(qs)
     .digest('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -221,13 +271,23 @@ function handleCallback(params, res) {
   }
 
   if (base === 'order_status_change') {
-    if (String(params.status) !== 'chargeable')
-      return err(res, 100, 'unsupported status: ' + params.status, true);
-
+    const status  = String(params.status || '');
     const orderId = String(params.order_id || '');
     const userId  = String(params.user_id  || '');
     const item    = String(params.item     || '');
-    if (!orderId || !userId || !CATALOGUE[item]) return err(res, 20, 'unknown item: ' + item, true);
+    if (!orderId || !userId) return err(res, 100, 'missing order/user id', true);
+
+    if (status === 'refunded') {
+      /* VK can refund an order after it was chargeable. Stop advertising it as an
+         active entitlement; the client receives this status on its next sync. */
+      if (!store.getOrder(orderId)) return err(res, 100, 'original order not found', false);
+      store.refundOrder(orderId);
+      return ok(res, { order_id: Number(orderId), app_order_id: Number(orderId) });
+    }
+
+    if (status !== 'chargeable')
+      return err(res, 100, 'unsupported status: ' + status, true);
+    if (!CATALOGUE[item]) return err(res, 20, 'unknown item: ' + item, true);
 
     /* The retry path. Answering the SAME app_order_id for an order already
        processed is what makes a duplicate notification harmless — VK is satisfied
@@ -236,10 +296,9 @@ function handleCallback(params, res) {
       return ok(res, { order_id: Number(orderId), app_order_id: Number(orderId) });
     }
 
-    store.grant(userId, item);
     store.recordOrder(orderId, {
       user_id: userId, item, at: Date.now(),
-      price: params.item_price, test: isTest
+      price: params.item_price, test: isTest, status: 'confirmed'
     });
     console.log('[vk] granted %s to user %s (order %s%s)', item, userId, orderId, isTest ? ', TEST' : '');
     return ok(res, { order_id: Number(orderId), app_order_id: Number(orderId) });
@@ -269,10 +328,18 @@ function handleVerify(body, res) {
   if (!launchSignOK(launch))   return send(res, { granted: false, reason: 'bad sign' });
   if (!CATALOGUE[item])        return send(res, { granted: false, reason: 'unknown item' });
 
+  if (CFG.appId && String(launch.vk_app_id || '') !== String(CFG.appId))
+    return send(res, { granted: false, reason: 'wrong app_id' });
+
   const userId = String(launch.vk_user_id || '');
+  const orders = store.ordersFor(userId);
+  const granted = orders.some(o => o.item === item && o.status === 'confirmed');
   return send(res, {
-    granted: store.owns(userId, item),
-    owns: store.all(userId)
+    granted,
+    status: granted ? 'confirmed' : 'pending',
+    orders,
+    owns: store.all(userId),
+    server_time: Date.now()
   });
 }
 
@@ -281,8 +348,31 @@ function handleVerify(body, res) {
    over by one request. Nothing legitimate here is anywhere near 64KB. */
 const MAX_BODY = 64 * 1024;
 
+function allowCors(req, res) {
+  const origin = String(req.headers.origin || '');
+  if (!origin) return true;                    // VK callback and non-browser clients
+  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0].trim();
+  let sameHost = false;
+  try { sameHost = new URL(origin).host === forwardedHost; } catch (_) {}
+  const allowed = sameHost || CFG.allowedOrigins.includes('*') || CFG.allowedOrigins.includes(origin);
+  if (!allowed) return false;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '600');
+  return true;
+}
+
 const server = http.createServer((req, res) => {
+  const url = (req.url || '').split('?')[0];
+  const corsOK = allowCors(req, res);
+  if (req.method === 'OPTIONS') {
+    res.writeHead(corsOK ? 204 : 403); return res.end();
+  }
   if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only'); }
+  if (url === '/vk/verify' && !corsOK) { res.writeHead(403); return res.end('origin not allowed'); }
 
   let body = '', over = false;
   req.on('data', c => {
@@ -292,7 +382,6 @@ const server = http.createServer((req, res) => {
   });
   req.on('end', () => {
     if (over) return;
-    const url = (req.url || '').split('?')[0];
     try {
       if (url === '/vk/callback') {
         const params = {};
@@ -311,10 +400,10 @@ const server = http.createServer((req, res) => {
 });
 
 if (require.main === module) {
-  for (const k of ['appId', 'appSecret', 'secureKey']) {
+  for (const k of ['appId', 'appSecret']) {
     if (!CFG[k]) console.warn('[vk] WARNING: %s is not set — the matching signature check will reject everything', k);
   }
   server.listen(CFG.port, () => console.log('[vk] payments callback listening on :' + CFG.port));
 }
 
-module.exports = { server, handleCallback, handleVerify, paymentSigOK, launchSignOK, CATALOGUE, store };
+module.exports = { server, handleCallback, handleVerify, paymentSigOK, launchSignOK, CATALOGUE, store, CFG };

@@ -6,7 +6,7 @@ server/orders.json
 server/orders.json.tmp
 server/*.tmp
 
-# Local env for the server's three secrets (app id, защищённый ключ, сервисный ключ).
+# Local env for the server's app id, protected key and optional deployment settings.
 .env
 .env.*
 
