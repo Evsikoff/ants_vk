@@ -186,18 +186,7 @@
     adCheckTimeoutMs: 3000,
     /* How long to wait for the client to acknowledge the handshake before getting on
        with boot anyway. A real client answers in milliseconds. */
-    initTimeoutMs: 3000,
-    /* The house banner that fills a Next-Level break VK could not fill itself. */
-    bannerImage: 'banner.webp',
-    bannerUrl:   'https://vk.ru/market/product/nastolnaya-igra-quotadmiral-taktika-risk-i-sudbaquot-kompaktnaya-versia-227786453-8922274',
-    /* Every Next-Level tap asks VK for an INTERSTITIAL — there is no coin flip any
-       more. The house banner is only a FALLBACK: it fills the pause when VK has
-       nothing to show (3-minute cooldown, empty fill, a call that never settles).
-       Set this to false to leave that pause empty instead, i.e. VK ads or nothing. */
-    bannerFallback: true,
-    /* How long before the banner's close button appears. An interstitial that can be
-       dismissed in zero milliseconds is an impression nobody saw. */
-    bannerCloseAfterMs: 2000
+    initTimeoutMs: 3000
   };
 
   /* ── LOG ───────────────────────────────────────────────────────────────────
@@ -633,7 +622,6 @@
     get lang()      { return ENV.lang; },
     get userId()    { return ENV.userId; },
     env: ENV,
-    conf: CONF,
     ready: ready,
     log: log,
     send: send,
@@ -1715,9 +1703,8 @@
 <style>
   /* ═══ VK CHROME ══════════════════════════════════════════════════════════════
      The only styling the VK port adds. It deliberately reuses the shell's own
-     tokens (--panel, --ink, --gold) rather than introducing colours, so the house
-     banner and the storefront read as part of the same game and not as an ad unit
-     bolted onto it. */
+     tokens (--panel, --ink, --gold) rather than introducing colours, so the
+     storefront reads as part of the same game. */
 
   /* Safe-area insets. Defaulted from the CSS environment so a mobile BROWSER
      (m.vk.ru, where the bridge sends no insets at all) still clears the notch and
@@ -1729,26 +1716,6 @@
     --vk-inset-bottom: env(safe-area-inset-bottom, 0px);
     --vk-inset-left:   env(safe-area-inset-left, 0px);
   }
-
-  /* THE HOUSE BANNER. Not `data-scrim`, on purpose: a stray tap on the backdrop must
-     not dismiss it, because dismissing it is what resumes the level transition and a
-     mis-tap would look like the game skipping a level. The only exits are the X and
-     the banner itself. */
-  #shVkBanner .vkban{ position:relative; display:flex; flex-direction:column; align-items:center;
-    gap:14px; padding:0 16px; max-width:100%; }
-  #shVkBanner .vkban-a{ display:block; line-height:0; border-radius:22px; overflow:hidden;
-    border:var(--ink-w) solid var(--ink); box-shadow:0 10px 0 rgba(0,0,0,.35), 0 18px 30px rgba(0,0,0,.45);
-    transition:transform .07s; }
-  #shVkBanner .vkban-a:active{ transform:translateY(3px); }
-  #shVkBanner .vkban-a img{ display:block; width:auto; height:auto;
-    max-width:min(88vw, 460px); max-height:64vh; object-fit:contain; pointer-events:none; }
-  /* The close button starts hidden and is revealed on a timer — an interstitial that
-     can be dismissed in zero milliseconds is an impression nobody saw. */
-  #shVkBanner .vkban-x{ width:52px; height:52px; border-radius:50%; padding:0;
-    display:flex; align-items:center; justify-content:center; }
-  #shVkBanner .vkban-x img{ width:24px; height:24px; }
-  #shVkBanner .vkban-wait{ font-size:14px; font-weight:800; opacity:.65; color:var(--text);
-    height:52px; display:flex; align-items:center; }
 
   /* Price chip on a real-money button — the mirror image of the shell's green
      `.rewtag` ("this plays an ad"), so gold-with-a-price and green-with-РЕКЛАМА are
@@ -1837,7 +1804,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      and nothing reaches for `vkBridge` directly — one seam, not twenty. */
   const VK = global.VKP || { active:false, isOK:false, iapAvailable:false,
                              adSupported(){ return false; }, log(){},
-                             conf:{ bannerFallback:true }, insets:{top:0,right:0,bottom:0,left:0} };
+                             insets:{top:0,right:0,bottom:0,left:0} };
 
   /* 🚨 `!VK.active` IS LOAD-BEARING, NOT BELT-AND-BRACES. The clause below accepts
      "we are inside an iframe" as proof of Playables — and a VK Mini App IS an
@@ -2085,10 +2052,8 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
      *  progression on it, so "never calls back" would be a frozen game. */
     tryShowInterstitial(done){
       let fired = false;
-      /* `done` now receives whether an ad ACTUALLY PLAYED. Every existing caller
-         ignores the argument, so this is backward compatible — but the VK transition
-         break needs it: when the cooldown or an empty fill swallows the ad, that slot
-         goes to the house banner instead of being lost. */
+      /* `done` receives whether an ad ACTUALLY PLAYED. Existing callers can ignore
+         the argument when they only need to wait for the request to settle. */
       const fin = (shown)=>{ if (fired) return; fired = true; if (done) done(!!shown); };
       const now = Date.now();
       if (VK.active){
@@ -2288,7 +2253,7 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
        keys it already knows about — a field that is not in this object is silently
        dropped on every restore, and an entitlement the player PAID for that does
        not survive a reload is a refund and a one-star review.
-       `noAds`         — bought once, forever: no interstitial, no house banner.
+       `noAds`         — bought once, forever: no interstitial.
        `unlimitedUntil`— epoch ms; while it is in the future, lives never deplete. */
     noAds:false, unlimitedUntil:0,
     /* The receipt roll: one entry per completed VK payment dialog. It is a LOG kept
@@ -3143,43 +3108,31 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
   const AD_WATCHDOG_MS = 6000;
 
   /* ── VK: THE NEXT-LEVEL BREAK ────────────────────────────────────────────────
-     Every tap of СЛЕДУЮЩИЙ УРОВЕНЬ asks VK for an interstitial. There is no coin
-     flip any more: the house banner is never CHOSEN over a VK ad, it only stands in
-     when VK itself has nothing to give. This REPLACES the Playables cadence (`due`)
-     on VK rather than layering on top of it; two ad schedules stacked would show
-     roughly twice what either intends.
-
-     Why the banner still exists at all: an interstitial that the 3-minute cooldown
-     blocks, or that VK has no fill for, would otherwise be a break with nothing in it
-     — the player waits for a beat and sees a level change. Falling through to the
-     banner means the slot is always worth the pause. `CONF.bannerFallback:false`
-     turns that fallback off, for a VK-ads-or-nothing break.
+     Every tap of СЛЕДУЮЩИЙ УРОВЕНЬ asks VK for an interstitial. This REPLACES the
+     Playables cadence (`due`) on VK rather than layering on top of it; two ad
+     schedules stacked would show roughly twice what either intends. If VK declines
+     the request or has no fill, the transition continues without an ad.
 
      The three anti-freeze guards from the Playables path are all still here, because
      the failure they prevent (an ad the host takes and never returns from, on the one
      tap that advances the game) is identical on VK:
        1. the continuation runs EXACTLY once, whatever the ad does;
-       2. a 6s watchdog falls through to the banner if the ad never settles;
+       2. a 6s watchdog continues the transition if the ad never settles;
        3. if we are still flagged paused when it settles, we resume ourselves. */
   function vkTransitionBreak(cb){
     let done = false;
     const go = ()=>{ if (done) return; done = true; cb && cb(); };
 
-    /* A bought ad-free game is ad-free at the transition too — including the house
-       banner. Selling "убрать рекламу" and then still showing a promo is the fastest
-       way to turn a paying player into a refund request. */
+    /* A bought ad-free game is ad-free at the transition too. */
     if (S.noAds) return go();
-
-    /* A fallback, not an alternative: reached only when VK declined the slot. */
-    const banner = ()=> ((VK.conf.bannerFallback !== false) ? showHouseBanner(go) : go());
 
     let settled = false;
     const wd = setTimeout(()=>{                                    // guard 2
       if (settled) return; settled = true;
-      SDK.logError('VK interstitial watchdog fired — falling through to the banner');
-      banner();
+      SDK.logError('VK interstitial watchdog fired — continuing without an ad');
+      go();
     }, AD_WATCHDOG_MS);
-    SDK.tryShowInterstitial((shown)=>{                             // guard 1
+    SDK.tryShowInterstitial(()=>{                                  // guard 1
       if (settled) return; settled = true;
       clearTimeout(wd);
       if (SDK.isPaused){                                           // guard 3
@@ -3187,47 +3140,8 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
         try { if (SDK.onResume) SDK.onResume(); } catch(_){}
         SDK.logError('VK interstitial finished while still paused — force-resumed');
       }
-      if (shown) go(); else banner();
+      go();
     });
-  }
-
-  /** The house banner. `done` is called exactly once, on whichever way it closes —
-   *  the X, a tap through to the product, or the overlay being torn down by anything
-   *  else. That last case is why the watcher interval exists: closeAll() strips
-   *  `.show` from every overlay it can see, and a banner dismissed that way would
-   *  otherwise leave the level transition waiting for a click that can never come. */
-  function showHouseBanner(done){
-    const ov = $('shVkBanner');
-    if (!ov) { done && done(); return; }
-    let fired = false;
-    const fin = ()=>{
-      if (fired) return; fired = true;
-      clearTimeout(revealT); clearInterval(watch);
-      hide('shVkBanner');
-      done && done();
-    };
-
-    const x    = $('shVkBannerX');
-    const wait = $('shVkBannerWait');
-    if (x)    { x.classList.add('hidden'); x.onclick = fin; }
-    if (wait) { wait.classList.remove('hidden'); }
-    const link = $('shVkBannerLink');
-    /* The banner is a REAL anchor with target=_blank, not a window.open() call. VK's
-       web client sandboxes the frame with allow-popups but scripted popups are the
-       first thing a browser blocks, and the native clients intercept a genuine link
-       navigation and hand it to the app. A real click on a real <a> is the one path
-       that works in all four clients. */
-    if (link) link.onclick = ()=> setTimeout(fin, 60);
-
-    const revealT = setTimeout(()=>{
-      if (x)    x.classList.remove('hidden');
-      if (wait) wait.classList.add('hidden');
-    }, VK.conf.bannerCloseAfterMs || 2000);
-
-    show('shVkBanner');
-    const watch = setInterval(()=>{
-      if (!ov.classList.contains('show')) fin();
-    }, 250);
   }
 
   function maybeInterstitial(due, cb){
@@ -4495,21 +4409,6 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
         '<div class="muted hidden" id="shShopNone">Сейчас предложений нет.<br>Загляните после игры.</div>'+
       '</div></div></div></div>'));
 
-    /* THE HOUSE BANNER — built only on VK, since it is only ever shown by the VK
-       transition break. No `data-scrim` and no `[data-close]`: both of those are wired
-       to the shell's delegated dismiss handler, which would hide the overlay without
-       running the continuation that advances the level. */
-    if (VK.active){
-      document.body.appendChild(el('<div class="sh-ov" id="shVkBanner"><div class="vkban">'+
-        '<a class="vkban-a" id="shVkBannerLink" target="_blank" rel="noopener noreferrer"'+
-          ' href="'+VK.conf.bannerUrl+'">'+
-          '<img src="'+VK.conf.bannerImage+'" alt="Настольная игра «Адмирал»">'+
-        '</a>'+
-        '<div class="vkban-wait" id="shVkBannerWait">Реклама</div>'+
-        '<button class="btn ghost vkban-x hidden" id="shVkBannerX"><img src="'+ic('close')+'"></button>'+
-      '</div></div>'));
-    }
-
     document.body.appendChild(el('<div class="sh-ov" id="shLives" data-scrim><div class="panel">'+
       '<button class="btn pclose ghost" data-close><img src="'+ic('close')+'"></button>'+
       '<div class="phead">ЖИЗНИ ЗАКОНЧИЛИСЬ</div>'+
@@ -4924,12 +4823,6 @@ window.THREE={"ACESFilmicToneMapping":et,"AddEquation":y,"AddOperation":J,"Addit
       }
 
       chk(!!CFG.vkProducts, 'vkProducts declared', 'CFG.vkProducts missing', true);
-
-      /* A banner that 404s is an empty overlay the player has to close for nothing —
-         and it is invisible in testing if the file happens to be cached. */
-      const bimg = new Image();
-      bimg.onerror = ()=> console.error('Shell vkPreflight — banner image is missing: ' + VK.conf.bannerImage);
-      bimg.src = VK.conf.bannerImage;
 
       /* The save round-trip, end to end and for real. Writing then reading a probe key
          is the only way to know the app actually has storage rights — the panel setting
